@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bank Statement Parser</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #ffffff;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --brand: #2563eb;
+            --brand-dark: #1d4ed8;
+            --ok: #16a34a;
+            --err: #dc2626;
+            --border: #e2e8f0;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            color: var(--ink);
+        }
+        .card {
+            background: var(--card);
+            width: 100%;
+            max-width: 640px;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.35);
+            overflow: hidden;
+        }
+        .header {
+            padding: 28px 32px;
+            background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%);
+            color: #fff;
+        }
+        .header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+        .header p { margin: 6px 0 0; opacity: .85; font-size: 14px; }
+        .body { padding: 28px 32px; }
+        label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+        .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; }
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 11px 13px;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            border-color: var(--brand);
+            box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+        }
+        .field { margin-bottom: 22px; }
+
+        /* Themed "Password protected" toggle. */
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            font-size: 14px;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #f8fafc;
+            transition: border-color .15s, background .15s, box-shadow .15s;
+        }
+        .checkbox-row:hover {
+            border-color: var(--brand);
+            background: #eef2ff;
+        }
+        .checkbox-row:has(input[type="checkbox"]:checked) {
+            border-color: var(--brand);
+            background: #eff6ff;
+            box-shadow: 0 0 0 3px rgba(37,99,235,.10);
+        }
+        .checkbox-row input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            margin: 0;
+            border: 2px solid var(--muted);
+            border-radius: 6px;
+            background: #fff;
+            cursor: pointer;
+            position: relative;
+            flex: 0 0 auto;
+            transition: background .15s, border-color .15s, box-shadow .15s;
+        }
+        .checkbox-row input[type="checkbox"]:hover { border-color: var(--brand); }
+        .checkbox-row input[type="checkbox"]:focus-visible {
+            box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+        }
+        .checkbox-row input[type="checkbox"]:checked {
+            background: var(--brand);
+            border-color: var(--brand);
+        }
+        .checkbox-row input[type="checkbox"]:checked::after {
+            content: "";
+            position: absolute;
+            left: 6px;
+            top: 2px;
+            width: 5px;
+            height: 10px;
+            border: solid #fff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        /* Password field reveal animation. */
+        .password-panel {
+            overflow: hidden;
+            max-height: 0;
+            opacity: 0;
+            margin-top: 0;
+            transition: max-height .25s ease, opacity .2s ease, margin-top .25s ease;
+        }
+        .password-panel.open {
+            max-height: 160px;
+            opacity: 1;
+            margin-top: 14px;
+        }
+        .input-wrap { position: relative; }
+        .input-wrap input { padding-right: 44px; }
+        .toggle-visibility {
+            position: absolute;
+            top: 50%;
+            right: 8px;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            padding: 6px;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+        .toggle-visibility:hover { color: var(--brand-dark); background: #eef2ff; }
+        .file-row { display: flex; gap: 10px; }
+        .file-row input { flex: 1; }
+        button {
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 9px;
+            cursor: pointer;
+            transition: background .15s, transform .05s;
+        }
+        button:active { transform: translateY(1px); }
+        .btn-browse {
+            background: #eef2ff;
+            color: var(--brand-dark);
+            padding: 0 18px;
+            white-space: nowrap;
+        }
+        .btn-browse:hover { background: #e0e7ff; }
+        .btn-primary {
+            background: var(--brand);
+            color: #fff;
+            padding: 13px 20px;
+            width: 100%;
+            font-size: 15px;
+        }
+        .btn-primary:hover { background: var(--brand-dark); }
+        .btn-primary:disabled { background: #94a3b8; cursor: not-allowed; }
+        .status {
+            margin-top: 22px;
+            padding: 14px 16px;
+            border-radius: 10px;
+            font-size: 14px;
+            display: none;
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .status.ok { display: block; background: #f0fdf4; color: var(--ok); border: 1px solid #bbf7d0; }
+        .status.err { display: block; background: #fef2f2; color: var(--err); border: 1px solid #fecaca; }
+        .status.info { display: block; background: #eff6ff; color: var(--brand-dark); border: 1px solid #bfdbfe; }
+        .spinner {
+            width: 15px; height: 15px;
+            border: 2px solid rgba(255,255,255,.5);
+            border-top-color: #fff;
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: -2px;
+            margin-right: 8px;
+            animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .footer { padding: 14px 32px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+
+        /* Completion effect: full-card success overlay with an animated tick and confetti. */
+        .overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 23, 42, .55);
+            backdrop-filter: blur(3px);
+            z-index: 50;
+            opacity: 0;
+            transition: opacity .25s ease;
+        }
+        .overlay.show { display: flex; opacity: 1; }
+        .overlay-inner {
+            text-align: center;
+            color: #fff;
+            transform: scale(.9);
+            transition: transform .25s cubic-bezier(.2,.9,.3,1.3);
+        }
+        .overlay.show .overlay-inner { transform: scale(1); }
+        .overlay-text { margin-top: 16px; font-size: 18px; font-weight: 600; }
+        .overlay-sub { margin-top: 4px; font-size: 13px; opacity: .8; }
+
+        .check-circle {
+            width: 92px; height: 92px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--ok);
+            box-shadow: 0 0 0 0 rgba(22,163,74,.55);
+            animation: pop .35s ease-out, pulse 1.4s ease-out .35s;
+        }
+        @keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.12); } 100% { transform: scale(1); } }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(22,163,74,.55); }
+            100% { box-shadow: 0 0 0 26px rgba(22,163,74,0); }
+        }
+        .check-circle svg { width: 50px; height: 50px; }
+        .check-circle svg path {
+            stroke-dasharray: 48;
+            stroke-dashoffset: 48;
+            animation: draw .4s ease-out .3s forwards;
+        }
+        @keyframes draw { to { stroke-dashoffset: 0; } }
+
+        .confetti {
+            position: fixed;
+            top: -12px;
+            width: 9px; height: 14px;
+            opacity: 0;
+            z-index: 55;
+            border-radius: 2px;
+            animation: fall linear forwards;
+        }
+        @keyframes fall {
+            0% { opacity: 1; transform: translateY(-10vh) rotate(0deg); }
+            100% { opacity: 0; transform: translateY(105vh) rotate(720deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .overlay, .overlay-inner, .check-circle, .check-circle svg path { animation: none; transition: none; }
+            .confetti { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <h1>Bank Statement Parser</h1>
+            <p>Convert a bank statement PDF or scanned image into a formatted, accumulated Excel workbook.</p>
+        </div>
+        <div class="body">
+            <div class="field">
+                <label for="file">Statement (PDF or scanned image)</label>
+                <p class="hint">Click &ldquo;Choose File&rdquo; to select a statement PDF or a scanned image (PNG, JPG, TIFF) &mdash; the columns are detected automatically.</p>
+                <div class="file-row">
+                    <input type="text" id="path" placeholder="No file selected" readonly />
+                    <button type="button" class="btn-browse" id="browse">Choose File</button>
+                    <input type="file" id="file" accept="application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg,image/tiff,.tif,.tiff,.bmp" hidden />
+                </div>
+            </div>
+
+            <div class="field">
+                <label class="checkbox-row" for="protected">
+                    <input type="checkbox" id="protected" />
+                    Password protected PDF
+                </label>
+                <div class="password-panel" id="passwordPanel">
+                    <label for="password">PDF password</label>
+                    <p class="hint">Enter the password required to open this statement.</p>
+                    <div class="input-wrap">
+                        <input type="password" id="password" placeholder="Enter PDF password" autocomplete="off" />
+                        <button type="button" class="toggle-visibility" id="togglePassword" aria-label="Show password">Show</button>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" class="btn-primary" id="run">Parse Statement</button>
+
+            <div class="status" id="status"></div>
+        </div>
+        <div class="footer">Runs locally on your computer. No data leaves this machine.</div>
+    </div>
+
+    <div class="overlay" id="overlay" aria-hidden="true">
+        <div class="overlay-inner">
+            <span class="check-circle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 13l4 4L19 7" />
+                </svg>
+            </span>
+            <div class="overlay-text">Parsing complete</div>
+            <div class="overlay-sub" id="overlaySub">Preparing your download&hellip;</div>
+        </div>
+    </div>
+
+    <script>
+        const pathEl = document.getElementById('path');
+        const browseEl = document.getElementById('browse');
+        const fileEl = document.getElementById('file');
+        const passwordEl = document.getElementById('password');
+        const protectedEl = document.getElementById('protected');
+        const passwordPanelEl = document.getElementById('passwordPanel');
+        const togglePasswordEl = document.getElementById('togglePassword');
+        const runEl = document.getElementById('run');
+        const statusEl = document.getElementById('status');
+        const overlayEl = document.getElementById('overlay');
+
+        function setStatus(kind, html) {
+            statusEl.className = 'status ' + kind;
+            statusEl.innerHTML = html;
+        }
+
+        // Show the password field only when the statement is marked as password protected.
+        protectedEl.addEventListener('change', () => {
+            passwordPanelEl.classList.toggle('open', protectedEl.checked);
+            if (protectedEl.checked) {
+                passwordEl.focus();
+            } else {
+                passwordEl.value = '';
+                passwordEl.type = 'password';
+                togglePasswordEl.textContent = 'Show';
+            }
+        });
+
+        // Reveal / hide the typed password.
+        togglePasswordEl.addEventListener('click', () => {
+            const show = passwordEl.type === 'password';
+            passwordEl.type = show ? 'text' : 'password';
+            togglePasswordEl.textContent = show ? 'Hide' : 'Show';
+            togglePasswordEl.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            passwordEl.focus();
+        });
+
+        const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        // Brief celebratory confetti burst shown alongside the success overlay.
+        function launchConfetti() {
+            if (reduceMotion) return;
+            const colors = ['#2563eb', '#16a34a', '#f59e0b', '#ec4899', '#8b5cf6'];
+            for (let i = 0; i < 80; i++) {
+                const piece = document.createElement('div');
+                piece.className = 'confetti';
+                piece.style.left = Math.random() * 100 + 'vw';
+                piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+                piece.style.animationDuration = (2 + Math.random() * 1.5) + 's';
+                piece.style.animationDelay = (Math.random() * 0.4) + 's';
+                document.body.appendChild(piece);
+                setTimeout(() => piece.remove(), 4200);
+            }
+        }
+
+        // Show the completion effect, then resolve so the caller can start the download.
+        function playCompletionEffect() {
+            return new Promise(resolve => {
+                overlayEl.classList.add('show');
+                overlayEl.setAttribute('aria-hidden', 'false');
+                launchConfetti();
+                const holdMs = reduceMotion ? 250 : 1100;
+                setTimeout(() => {
+                    overlayEl.classList.remove('show');
+                    overlayEl.setAttribute('aria-hidden', 'true');
+                    resolve();
+                }, holdMs);
+            });
+        }
+
+        // Open the browser's own native file picker.
+        browseEl.addEventListener('click', () => fileEl.click());
+
+        fileEl.addEventListener('change', () => {
+            pathEl.value = fileEl.files.length ? fileEl.files[0].name : '';
+        });
+
+        runEl.addEventListener('click', async () => {
+            const file = fileEl.files[0];
+
+            if (!file) { setStatus('err', 'Please choose a PDF or scanned image file.'); return; }
+
+            runEl.disabled = true;
+            const original = runEl.textContent;
+            runEl.innerHTML = '<span class="spinner"></span>Parsing...';
+            setStatus('info', 'Parsing statement, please wait...');
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file, file.name);
+                if (protectedEl.checked && passwordEl.value) { formData.append('password', passwordEl.value); }
+
+                const res = await fetch('/api/process', { method: 'POST', body: formData });
+                const contentType = res.headers.get('Content-Type') || '';
+
+                if (res.ok && contentType.includes('spreadsheetml')) {
+                    // The server returned the Excel workbook; trigger a browser download.
+                    const blob = await res.blob();
+                    const disposition = res.headers.get('Content-Disposition') || '';
+                    const match = disposition.match(/filename="?([^"]+)"?/);
+                    const fileName = match ? match[1] : 'Statement_Parsed.xlsx';
+
+                    // Celebrate a successful parse before the file download begins.
+                    await playCompletionEffect();
+
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+
+                    const txns = res.headers.get('X-Transaction-Count') || '?';
+                    const groups = res.headers.get('X-Group-Count') || '?';
+                    setStatus('ok',
+                        '<strong>Done!</strong> ' + txns +
+                        ' transaction(s) across ' + groups + ' accumulated group(s).<br>' +
+                        'Your Excel file <code>' + fileName + '</code> has been downloaded.');
+                } else {
+                    const data = await res.json().catch(() => ({}));
+                    setStatus('err', data.error || 'Processing failed.');
+                }
+            } catch {
+                setStatus('err', 'A network error occurred while processing.');
+            } finally {
+                runEl.disabled = false;
+                runEl.textContent = original;
+            }
+        });
+    </script>
+</body>
+</html>

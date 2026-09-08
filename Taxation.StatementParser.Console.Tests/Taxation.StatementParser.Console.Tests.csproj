@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+	<TargetFramework>net10.0</TargetFramework>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<Nullable>enable</Nullable>
+	<LangVersion>latest</LangVersion>
+	<IsPackable>false</IsPackable>
+	<IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+	<PackageReference Include="xunit" Version="2.9.3" />
+	<PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
+	<PackageReference Include="FluentAssertions" Version="7.2.0" />
+	<PackageReference Include="coverlet.collector" Version="10.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\Taxation.StatementParser.Console\Taxation.StatementParser.Console.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<!-- Copy the UI asset next to the test assembly so WebUiPage can be exercised. -->
+	<None Include="..\Taxation.StatementParser.Console\Assets\index.html" Link="Assets\index.html">
+	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	</None>
+  </ItemGroup>
+
+</Project>

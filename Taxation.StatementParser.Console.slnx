@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Taxation.StatementParser.Console.Tests/Taxation.StatementParser.Console.Tests.csproj" />
+  <Project Path="Taxation.StatementParser.Console/Taxation.StatementParser.Console.csproj" />
+</Solution>
