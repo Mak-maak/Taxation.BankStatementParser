@@ -525,9 +525,11 @@ public sealed class PdfStatementParser
     private string[] AssignCells(TextLine line, ColumnLayout layout)
     {
         var builders = new StringBuilder[_columns.Count];
+        bool[] amountColumns = new bool[_columns.Count];
         for (int c = 0; c < _columns.Count; c++)
         {
             builders[c] = new StringBuilder();
+            amountColumns[c] = ColumnClassifier.Classify(_columns[c]) == ColumnType.Amount;
         }
 
         foreach (PositionedWord word in line.Words)
@@ -538,6 +540,14 @@ public sealed class PdfStatementParser
             // -1 marks a word that fell under an ignored (non-canonical) heading; discard it so the
             // output is restricted to the canonical columns.
             if (column < 0)
+            {
+                continue;
+            }
+
+            // Amount columns (Debit/Credit/Balance) must only ever contain monetary values. Discard
+            // any stray text (e.g. a "Transaction De" hyperlink that geometrically overlaps the
+            // balance column) so numeric cells are never polluted by non-amount words.
+            if (amountColumns[column] && !ContainsDigit(word.Text))
             {
                 continue;
             }
@@ -557,6 +567,19 @@ public sealed class PdfStatementParser
         }
 
         return cells;
+    }
+
+    private static bool ContainsDigit(string text)
+    {
+        foreach (char ch in text)
+        {
+            if (char.IsDigit(ch))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The column that receives noise which bled into the date cell (first non-anchor column).</summary>

@@ -32,7 +32,7 @@ internal static class HeaderAutoDetector
         // Description related
         "description", "details", "particulars", "narration", "narrative", "remarks", "remark",
         "transactions", "reference", "ref", "chq", "cheque", "instrument", "memo", "type", "mode",
-        "channel", "note", "notes",
+        "channel", "note", "notes", "doc",
         // Amount related
         "debit", "credit", "balance", "amount", "withdrawal", "withdrawals", "deposit", "deposits",
         "money", "payment", "payments", "paid", "in", "out", "dr", "cr", "closing", "opening",
@@ -287,8 +287,8 @@ internal static class HeaderAutoDetector
             return CanonicalRole.Credit;
         }
 
-        // Reference / cheque / instrument number.
-        if (Has("ref", "reference", "chq", "cheque", "instrument"))
+        // Reference / cheque / instrument / document number.
+        if (Has("ref", "reference", "chq", "cheque", "instrument", "doc"))
         {
             return CanonicalRole.Reference;
         }
@@ -329,13 +329,71 @@ internal static class HeaderAutoDetector
             .ToList();
 
     /// <summary>
+    /// Decorative fill characters that some banks wrap around heading text (e.g.
+    /// "*******Debit*******", "======Balance======"). They carry no meaning but greatly inflate a
+    /// word's width, which shrinks the visible gap to the neighbouring heading and can cause two
+    /// distinct columns (e.g. Debit and Credit) to be merged into one during grouping.
+    /// </summary>
+    private static readonly char[] DecorativeChars = ['*', '=', '_', '~'];
+
+    /// <summary>
+    /// Removes leading/trailing decorative wrapper characters (see <see cref="DecorativeChars"/>)
+    /// from each header word and shrinks its bounding box proportionally so the true horizontal gaps
+    /// between headings are restored. This prevents asterisk-decorated amount headers such as
+    /// "*******Debit*******  *******Credit*******  ******Balance*******" from merging into a single
+    /// column (which would otherwise be misclassified as one Balance column). Words without such
+    /// decoration are returned unchanged.
+    /// </summary>
+    private static IReadOnlyList<PositionedWord> TrimDecorativeWords(IReadOnlyList<PositionedWord> words)
+    {
+        var result = new List<PositionedWord>(words.Count);
+        foreach (PositionedWord word in words)
+        {
+            string text = word.Text;
+            int lead = 0;
+            while (lead < text.Length && Array.IndexOf(DecorativeChars, text[lead]) >= 0)
+            {
+                lead++;
+            }
+
+            int trail = 0;
+            while (trail < text.Length - lead && Array.IndexOf(DecorativeChars, text[text.Length - 1 - trail]) >= 0)
+            {
+                trail++;
+            }
+
+            if (lead == 0 && trail == 0)
+            {
+                result.Add(word);
+                continue;
+            }
+
+            string trimmed = text.Substring(lead, text.Length - lead - trail);
+            if (trimmed.Length == 0)
+            {
+                // Purely decorative token (e.g. "........" or "*****"): drop it so it neither forms a
+                // column nor influences the gap statistics.
+                continue;
+            }
+
+            double width = Math.Abs(word.Right - word.Left);
+            double perChar = text.Length > 0 ? width / text.Length : 0.0;
+            double newLeft = word.Left + (lead * perChar);
+            double newRight = word.Right - (trail * perChar);
+            result.Add(new PositionedWord(trimmed, newLeft, newRight, word.Bottom, word.Top));
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Splits a physical line into column groups. Words separated by a wide horizontal gap belong to
     /// different columns, while words separated by a normal space form one multi word heading.
     /// </summary>
     private static List<ColumnGroup> GroupIntoColumns(TextLine line)
     {
         var groups = new List<ColumnGroup>();
-        IReadOnlyList<PositionedWord> words = line.Words;
+        IReadOnlyList<PositionedWord> words = TrimDecorativeWords(line.Words);
         if (words.Count == 0)
         {
             return groups;

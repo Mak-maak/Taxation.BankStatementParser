@@ -260,6 +260,68 @@ public sealed class PdfStatementParserAutoDetectTests
         }
     }
 
+    [Fact]
+    public void Parse_AutoDetect_WithAsteriskDecoratedAmountHeaders_ShouldKeepDebitCreditBalanceSeparate()
+    {
+        // Reproduces a real statement whose amount headings are wrapped in decorative asterisks:
+        // "Date(DD/MM)  Value  *******Doc.No*******  ***Particulars*****  *******Debit*******
+        //  *******Credit*******  ******Balance*******".
+        // The asterisks inflate each heading's width, shrinking the gap to its neighbour. Without
+        // trimming them the three amount headings merge into one column (misclassified as Balance),
+        // collapsing Debit/Credit/Balance together. They must remain three distinct columns.
+        var builder = new PdfDocumentBuilder();
+        PdfDocumentBuilder.AddedFont font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        PdfPageBuilder page = builder.AddPage(1400, 600);
+
+        double dateX = 30;
+        double valueX = 150;
+        double docX = 240;
+        double particularsX = 410;
+        double debitX = 640;
+        double creditX = 760;
+        double balanceX = 880;
+
+        AddText(page, font, dateX, 550, "Date(DD/MM)");
+        AddText(page, font, valueX, 550, "Value");
+        AddText(page, font, docX, 550, "*******Doc.No*******");
+        AddText(page, font, particularsX, 550, "***Particulars*****");
+        AddText(page, font, debitX, 550, "*******Debit*******");
+        AddText(page, font, creditX, 550, "*******Credit*******");
+        AddText(page, font, balanceX, 550, "******Balance*******");
+
+        AddText(page, font, dateX, 520, "02/07/25");
+        AddText(page, font, valueX, 520, "02/07/25");
+        AddText(page, font, particularsX, 520, "Ufone Super Card Max");
+        AddText(page, font, debitX, 520, "-1,499.00");
+        AddText(page, font, balanceX, 520, "7,315,907.26");
+        // A "Transaction De" hyperlink sits to the right, geometrically overlapping the Balance
+        // column. It must be stripped so the amount cell holds only the monetary value.
+        AddText(page, font, 1080, 520, "Transaction");
+        AddText(page, font, 1200, 520, "De");
+
+        string path = WriteToTemp(builder);
+        try
+        {
+            var parser = new PdfStatementParser();
+
+            IReadOnlyList<StatementTransaction> transactions = parser.Parse(path);
+
+            parser.Columns.Should().Contain("Debit");
+            parser.Columns.Should().Contain("Credit");
+            parser.Columns.Should().Contain("Balance");
+            parser.Columns[parser.AnchorColumnIndex].Should().Be("Transaction Date");
+
+            transactions.Should().HaveCount(1);
+            transactions[0]["Debit"].Should().Be("-1,499.00");
+            transactions[0]["Balance"].Should().Be("7,315,907.26");
+            transactions[0]["Credit"].Should().BeNullOrEmpty();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string CreateStatementPdf(string[] headerCells, double[] positions)
     {
         var builder = new PdfDocumentBuilder();
