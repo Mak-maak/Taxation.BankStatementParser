@@ -3,6 +3,7 @@ using Taxation.StatementParser.Console.Configuration;
 using Taxation.StatementParser.Console.Excel;
 using Taxation.StatementParser.Console.Models;
 using Taxation.StatementParser.Console.Parsing;
+using Taxation.StatementParser.Console.Parsing.Ai;
 
 namespace Taxation.StatementParser.Console.Processing;
 
@@ -16,6 +17,16 @@ public sealed class StatementProcessingService
     /// <summary>Application settings (Excel password protection) loaded from appsettings.json.</summary>
     private readonly AppSettings _settings;
 
+    /// <summary>
+    /// Factory for the local AI extractor. Overridable so tests can inject a mock without a running
+    /// Ollama service. Defaults to the offline <see cref="OllamaVisionExtractor"/>.
+    /// </summary>
+    private readonly Func<AiSettings, Action<string>?, IAiStatementExtractor> _aiExtractorFactory;
+
+    /// <summary>Canonical output columns used when AI supplies the transactions.</summary>
+    private static readonly string[] AiColumns =
+        ["Transaction Date", "Description", "Debit", "Credit", "Balance"];
+
     /// <summary>Creates the service using settings loaded from <c>appsettings.json</c>.</summary>
     public StatementProcessingService()
         : this(AppSettings.Load())
@@ -24,8 +35,17 @@ public sealed class StatementProcessingService
 
     /// <summary>Creates the service with explicit settings (used by tests).</summary>
     public StatementProcessingService(AppSettings settings)
+        : this(settings, static (aiSettings, log) => new OllamaVisionExtractor(aiSettings, log))
+    {
+    }
+
+    /// <summary>Creates the service with explicit settings and an AI extractor factory (used by tests).</summary>
+    public StatementProcessingService(
+        AppSettings settings,
+        Func<AiSettings, Action<string>?, IAiStatementExtractor> aiExtractorFactory)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _aiExtractorFactory = aiExtractorFactory ?? throw new ArgumentNullException(nameof(aiExtractorFactory));
     }
 
     /// <summary>Image formats that are OCR'd for scanned / captured statements.</summary>
@@ -60,13 +80,72 @@ public sealed class StatementProcessingService
         try
         {
             var parser = new PdfStatementParser(log, password);
-            IReadOnlyList<StatementTransaction> transactions = IsImagePath(path)
-                ? parser.ParseImage(path)
-                : parser.Parse(path);
-            IReadOnlyList<string> columns = parser.Columns;
+            IReadOnlyList<StatementTransaction> transactions;
+            IReadOnlyList<string> columns;
 
+            // Diagnostic captured when the geometric engine throws, so we can report a precise
+            // reason if the AI fallback is unavailable or also unable to recover.
+            string? geometricError = null;
+
+            try
+            {
+                transactions = IsImagePath(path)
+                    ? parser.ParseImage(path)
+                    : parser.Parse(path);
+                columns = parser.Columns;
+            }
+            catch (Exception ex) when (_settings.Ai.IsEnabled)
+            {
+                // Geometric parsing threw — e.g. a new/slightly different statement layout whose
+                // header or columns the geometric engine did not recognise. Instead of failing, we
+                // fall through to the AI fallback below to recover the transactions.
+                geometricError = ex.Message;
+                log?.Invoke($"Geometric parser failed ({ex.Message}); attempting AI fallback.");
+                transactions = [];
+                columns = [];
+            }
+
+            // Optional, fully-offline AI fallback. Runs only when enabled AND (configured to always
+            // run, OR the input is a scan/image, OR the geometric result threw / is empty / fails the
+            // balance-continuity sanity check — i.e. an unrecognised or slightly-changed layout).
+            // If the local runtime is unavailable the geometric result is kept unchanged.
+            if (ShouldTryAi(path, columns, transactions))
+            {
+                if (geometricError is null)
+                {
+                    log?.Invoke(transactions.Count == 0
+                        ? "Geometric parser produced no transactions; attempting AI fallback."
+                        : "Geometric parse result failed validation; attempting AI fallback.");
+                }
+
+                (IReadOnlyList<string> aiColumns, IReadOnlyList<StatementTransaction> aiTransactions) =
+                    TryAiExtraction(path, password, log);
+
+                if (aiTransactions.Count > 0 &&
+                    (transactions.Count == 0 || StatementValidation.LooksValid(aiColumns, aiTransactions)))
+                {
+                    log?.Invoke($"AI extraction accepted: {aiTransactions.Count} transaction(s).");
+                    columns = aiColumns;
+                    transactions = aiTransactions;
+                }
+            }
+
+            // If the geometric engine threw and AI could not recover (disabled, unavailable, or its
+            // output was rejected), surface a clear, actionable failure rather than a generic one.
             if (columns.Count < 2)
             {
+                if (geometricError is not null)
+                {
+                    string hint = _settings.Ai.IsEnabled
+                        ? "The AI fallback could not recover the transactions (the local AI model may " +
+                          "be offline or the layout unreadable)."
+                        : "Enable the local AI fallback (set Ai:Enabled to \"yes\" in appsettings.json) " +
+                          "to automatically handle new or slightly different statement layouts.";
+
+                    return StatementProcessingResult.Failure(
+                        $"Could not parse this statement layout: {geometricError} {hint}");
+                }
+
                 return StatementProcessingResult.Failure(
                     "Could not detect the statement columns automatically. Ensure the file contains a " +
                     "table with a Date column, and that a scanned document is clear and upright.");
@@ -147,6 +226,99 @@ public sealed class StatementProcessingService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Decides whether the optional AI extractor should run: only when enabled AND either configured
+    /// to always run, the input is a scanned/image file, or the geometric parse yielded no columns,
+    /// no transactions, or a result that fails the balance-continuity sanity check.
+    /// </summary>
+    private bool ShouldTryAi(
+        string path,
+        IReadOnlyList<string> columns,
+        IReadOnlyList<StatementTransaction> transactions)
+    {
+        if (!_settings.Ai.IsEnabled)
+        {
+            return false;
+        }
+
+        if (_settings.Ai.IsAlwaysMode || IsImagePath(path))
+        {
+            return true;
+        }
+
+        return columns.Count < 2
+            || transactions.Count == 0
+            || !StatementValidation.LooksValid(columns, transactions);
+    }
+
+    /// <summary>
+    /// Runs the local, offline AI extractor for the document. Returns empty results (never throws)
+    /// when the runtime is unavailable or produces nothing, so the caller keeps the geometric result.
+    /// </summary>
+    private (IReadOnlyList<string> Columns, IReadOnlyList<StatementTransaction> Transactions) TryAiExtraction(
+        string path,
+        string? password,
+        Action<string>? log)
+    {
+        try
+        {
+            IAiStatementExtractor extractor = _aiExtractorFactory(_settings.Ai, log);
+            try
+            {
+                if (!extractor.IsAvailableAsync().GetAwaiter().GetResult())
+                {
+                    log?.Invoke("AI extractor is not available; keeping geometric parse result.");
+                    return ([], []);
+                }
+
+                AiExtractionResult result = extractor
+                    .ExtractAsync(path, password)
+                    .GetAwaiter()
+                    .GetResult();
+
+                if (!result.Succeeded)
+                {
+                    log?.Invoke($"AI extraction did not succeed: {result.Diagnostic}");
+                    return ([], []);
+                }
+
+                IReadOnlyList<StatementTransaction> transactions = ConvertAiRows(result.Rows);
+                return (AiColumns, transactions);
+            }
+            finally
+            {
+                (extractor as IDisposable)?.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"AI extraction error (ignored, using geometric result): {ex.Message}");
+            return ([], []);
+        }
+    }
+
+    /// <summary>Maps AI rows to <see cref="StatementTransaction"/> objects on the canonical columns.</summary>
+    private static IReadOnlyList<StatementTransaction> ConvertAiRows(IReadOnlyList<AiExtractionRow> rows)
+    {
+        var transactions = new List<StatementTransaction>(rows.Count);
+        foreach (AiExtractionRow row in rows)
+        {
+            var transaction = new StatementTransaction(AiColumns);
+            transaction.SetColumn("Transaction Date", row.Date);
+            transaction.SetColumn("Description", row.Description);
+            transaction.SetColumn("Debit", row.Debit);
+            transaction.SetColumn("Credit", row.Credit);
+            transaction.SetColumn("Balance", row.Balance);
+
+            if (!transaction.IsEmpty)
+            {
+                transactions.Add(transaction);
+            }
+        }
+
+        return transactions;
     }
 
     private StatementProcessingResult Finalize(
