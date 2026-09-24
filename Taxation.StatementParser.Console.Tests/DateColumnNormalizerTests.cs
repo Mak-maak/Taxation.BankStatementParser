@@ -23,6 +23,14 @@ public sealed class DateColumnNormalizerTests
     [InlineData("1/7/25", "01/07/2025")]
     [InlineData("Jul 03, 2025", "03/07/2025")]
     [InlineData("July 3 2025", "03/07/2025")]
+    [InlineData("01Jun25", "01/06/2025")]
+    [InlineData("1Jun25", "01/06/2025")]
+    [InlineData("10Jun25", "10/06/2025")]
+    [InlineData("02Jun2025", "02/06/2025")]
+    [InlineData("15Dec24", "15/12/2024")]
+    [InlineData("01Jun 25", "01/06/2025")]
+    [InlineData("01 Jun25", "01/06/2025")]
+    [InlineData("10 Jun 25", "10/06/2025")]
     public void TryNormalize_WithValidDate_NormalizesToCanonicalFormat(string input, string expected)
     {
         bool ok = DateColumnNormalizer.TryNormalize(input, out string date, out string noise);

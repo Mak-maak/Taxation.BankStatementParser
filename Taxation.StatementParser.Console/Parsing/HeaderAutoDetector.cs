@@ -30,7 +30,7 @@ internal static class HeaderAutoDetector
         "date", "value", "transaction", "txn", "trans", "posting", "post", "booking", "book",
         "effective", "entry", "process", "processed",
         // Description related
-        "description", "details", "particulars", "narration", "narrative", "remarks", "remark",
+        "description", "details", "particulars", "particular", "narration", "narrative", "remarks", "remark",
         "transactions", "reference", "ref", "chq", "cheque", "instrument", "memo", "type", "mode",
         "channel", "note", "notes", "doc",
         // Amount related
@@ -311,7 +311,7 @@ internal static class HeaderAutoDetector
         }
 
         // Description / details / particulars / narration.
-        if (Has("description", "details", "particulars", "narration", "narrative",
+        if (Has("description", "details", "particulars", "particular", "narration", "narrative",
                 "remarks", "remark", "memo"))
         {
             return CanonicalRole.Description;

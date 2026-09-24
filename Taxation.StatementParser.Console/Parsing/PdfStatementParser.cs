@@ -199,6 +199,16 @@ public sealed class PdfStatementParser
             }
 
             int startLine = headerIndex >= 0 ? headerIndex + 1 : 0;
+
+            // A new page (with its own detected header) starts a fresh transaction context. This
+            // prevents a repeating per-page account banner (From/To Date, Statement/Account No,
+            // masked account numbers) that sits ABOVE the header on the next page from ever being
+            // merged as a continuation line into the last transaction of the previous page.
+            if (headerIndex >= 0)
+            {
+                current = null;
+            }
+
             for (int i = startLine; i < lines.Count; i++)
             {
                 TextLine line = lines[i];
@@ -209,9 +219,27 @@ public sealed class PdfStatementParser
                     continue;
                 }
 
+                // Skip repeating account-banner / letterhead lines (From Date, To Date, Statement No,
+                // Branch, Currency, Account No, IBAN, "electronic statement" footer). These carry dates
+                // and masked numbers that would otherwise corrupt a transaction when merged.
+                if (IsBannerLine(line))
+                {
+                    _log($"Skipped banner/metadata line: '{line.Text}'.");
+                    continue;
+                }
+
                 string[] cells = AssignCells(line, layout!);
                 if (cells.All(string.IsNullOrWhiteSpace))
                 {
+                    continue;
+                }
+
+                // "BALANCE B/F" (balance brought forward) carry-forward markers repeat at the top of
+                // continuation pages and often lack a date. They are not real transactions; skip them
+                // entirely so they neither create a spurious row nor merge into the previous one.
+                if (IsBalanceCarriedForward(cells))
+                {
+                    _log($"Skipped balance brought-forward marker: '{line.Text}'.");
                     continue;
                 }
                 // The anchor column is the Date column. A line begins a NEW transaction ONLY when
@@ -486,6 +514,64 @@ public sealed class PdfStatementParser
         return true;
     }
 
+    // Distinctive labels that only ever appear in the repeating per-page account banner / letterhead,
+    // never inside a transaction description. Kept intentionally specific (multi-word, unambiguous)
+    // so ordinary descriptions such as "Opening balance" or "Salary" are never misclassified.
+    private static readonly string[] BannerLabels =
+    [
+        "fromdate", "todate", "statementno", "statementdate", "statementperiod",
+        "branchtel", "accountno", "accountnumber", "customerno", "customerid",
+        "electronicstatement",
+    ];
+
+    /// <summary>
+    /// Detects a repeating account-banner / letterhead / footer line so it can be skipped. Matching
+    /// is punctuation/space insensitive so "From Date:", "From  Date", and "FROM DATE" all match.
+    /// </summary>
+    private static bool IsBannerLine(TextLine line)
+    {
+        string collapsed = Normalize(line.Text);
+        if (collapsed.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (string label in BannerLabels)
+        {
+            if (collapsed.Contains(label, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Detects a "Balance Brought Forward" carry-forward marker (e.g. "BALANCE B/F", "B/F",
+    /// "Balance C/F", "Opening Balance") from the row's Description cell. These repeat at page
+    /// boundaries and are not transactions, so the caller skips them. Matching is
+    /// punctuation/space insensitive, so "BALANCE B/F", "Balance B / F" and "BF" all match.
+    /// </summary>
+    private bool IsBalanceCarriedForward(string[] cells)
+    {
+        int descriptionColumn = FirstNonAnchorColumn();
+        if (descriptionColumn < 0 || descriptionColumn >= cells.Length)
+        {
+            return false;
+        }
+
+        string description = Normalize(cells[descriptionColumn]);
+        if (description.Length == 0)
+        {
+            return false;
+        }
+
+        return description is "balancebf" or "balancecf"
+            or "bf" or "cf"
+            or "balancebroughtforward" or "balancecarriedforward";
+    }
+
     /// <summary>
     /// Finds the horizontal extent of a (possibly multi word) column heading within a line.
     /// Matching is case/punctuation insensitive for robustness across bank formats.
@@ -546,9 +632,25 @@ public sealed class PdfStatementParser
 
             // Amount columns (Debit/Credit/Balance) must only ever contain monetary values. Discard
             // any stray text (e.g. a "Transaction De" hyperlink that geometrically overlaps the
-            // balance column) so numeric cells are never polluted by non-amount words.
-            if (amountColumns[column] && !ContainsDigit(word.Text))
+            // balance column) OR digit-bearing but non-monetary tokens (reference numbers like
+            // "01982518", value-date stamps like "V.010625", masked accounts like "*******8401")
+            // so numeric cells are never polluted by non-amount words.
+            if (amountColumns[column])
             {
+                // A reference number glued to the real amount (no space) arrives as a single token
+                // such as "8269717,500.00" (STAN "826971" + "7,500.00"). Repair it by extracting the
+                // properly comma-grouped trailing amount; reject anything that is not a valid amount.
+                if (!TryNormalizeAmountToken(word.Text, out string repaired))
+                {
+                    continue;
+                }
+
+                if (builders[column].Length > 0)
+                {
+                    builders[column].Append(' ');
+                }
+
+                builders[column].Append(repaired);
                 continue;
             }
 
@@ -564,6 +666,18 @@ public sealed class PdfStatementParser
         for (int c = 0; c < _columns.Count; c++)
         {
             cells[c] = builders[c].ToString().Trim();
+
+            // Safety net: an amount column must hold a SINGLE value. If more than one monetary token
+            // survived (e.g. a comma-grouped reference like "1,234" drifting next to the real amount),
+            // keep only the last (rightmost) one, since statement amounts are right-aligned.
+            if (amountColumns[c] && cells[c].Contains(' '))
+            {
+                string[] parts = cells[c].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length > 1)
+                {
+                    cells[c] = parts[^1];
+                }
+            }
         }
 
         return cells;
@@ -580,6 +694,127 @@ public sealed class PdfStatementParser
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Validates and repairs a token destined for an amount column. Returns the clean monetary
+    /// value in <paramref name="normalized"/> when the token is (or contains) a genuine amount.
+    ///
+    /// A genuine amount is a run of digits optionally grouped by commas in exact 3-digit blocks with
+    /// an optional 2-decimal fraction: "790.00", "7,500.00", "2,650", "20,000.00". This rejects:
+    ///   - bare integers / references ("826971", "211638", "55051"),
+    ///   - masked accounts and value stamps ("*******8401", "V.010625"),
+    ///   - and REPAIRS a reference glued to an amount ("8269717,500.00" -> "7,500.00") by discarding
+    ///     the malformed leading portion whose comma grouping is invalid.
+    /// </summary>
+    private static bool TryNormalizeAmountToken(string text, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        string token = text.Trim();
+
+        // Strip a single leading currency/sign decoration and an optional trailing sign/marker.
+        token = token.TrimStart('+', '(', '$', '£', '€', '₨');
+        bool negative = token.StartsWith('-');
+        token = token.TrimStart('-').TrimEnd(')', '-');
+
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        // Only digits, commas and a single dot may appear; anything else disqualifies the token.
+        int dotCount = 0;
+        foreach (char ch in token)
+        {
+            if (char.IsDigit(ch) || ch == ',')
+            {
+                continue;
+            }
+
+            if (ch == '.')
+            {
+                if (++dotCount > 1)
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            return false;
+        }
+
+        string integerPart = dotCount == 1 ? token[..token.IndexOf('.')] : token;
+        string fractionPart = dotCount == 1 ? token[(token.IndexOf('.') + 1)..] : string.Empty;
+
+        // Reject bare integers with no comma and no decimal: these are references, not amounts.
+        if (dotCount == 0 && !token.Contains(','))
+        {
+            return false;
+        }
+
+        // Validate/repair the integer part's comma grouping. Correct grouping is a 1-3 digit lead
+        // block followed by zero or more ",ddd" blocks. If the whole part is malformed (e.g.
+        // "8269717,500" from a glued reference), keep only the valid rightmost grouped suffix.
+        if (integerPart.Contains(','))
+        {
+            string[] groups = integerPart.Split(',');
+
+            // Trailing groups must each be exactly 3 digits. Find the longest valid suffix.
+            int firstValid = groups.Length; // index of first group that starts a valid suffix
+            for (int g = groups.Length - 1; g >= 1; g--)
+            {
+                if (groups[g].Length == 3 && groups[g].All(char.IsDigit))
+                {
+                    firstValid = g;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            if (firstValid > groups.Length - 1)
+            {
+                // No valid trailing ",ddd" group at all -> not a real grouped amount.
+                return false;
+            }
+
+            // The lead block (group just before the valid suffix) must be exactly 1-3 digits for a
+            // correctly grouped amount. If it is longer (a glued reference such as "8269717"), the
+            // token is unrecoverable garbage — reject it rather than inventing a wrong amount.
+            string lead = groups[firstValid - 1];
+            if (lead.Length is 0 or > 3 || !lead.All(char.IsDigit))
+            {
+                return false;
+            }
+
+            var rebuilt = new StringBuilder(lead);
+            for (int g = firstValid; g < groups.Length; g++)
+            {
+                rebuilt.Append(',').Append(groups[g]);
+            }
+
+            integerPart = rebuilt.ToString();
+        }
+
+        if (integerPart.Length == 0 || !integerPart.Replace(",", string.Empty).All(char.IsDigit))
+        {
+            return false;
+        }
+
+        normalized = dotCount == 1 ? $"{integerPart}.{fractionPart}" : integerPart;
+        if (negative)
+        {
+            normalized = "-" + normalized;
+        }
+
+        return true;
     }
 
     /// <summary>The column that receives noise which bled into the date cell (first non-anchor column).</summary>

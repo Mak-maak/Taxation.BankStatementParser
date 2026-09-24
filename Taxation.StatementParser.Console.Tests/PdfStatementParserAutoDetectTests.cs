@@ -322,6 +322,284 @@ public sealed class PdfStatementParserAutoDetectTests
         }
     }
 
+    [Fact]
+    public void Parse_AutoDetect_WithSummaryFirstPage_AndTwoDateColumns_ShouldParseTransactions()
+    {
+        // Reproduces a Meezan statement: a first page carrying an "Account Summary" / "Term Deposit
+        // Summary" (no Date column) that must be ignored, followed by a transaction page whose header
+        // is "Date  Value Date  Doc No  Particular  Debit  Credit  Balance". The anchor is the
+        // Transaction Date (not the Value Date); rows use the dd-MMM-yyyy date style and a "-"
+        // placeholder in empty amount cells.
+        var builder = new PdfDocumentBuilder();
+        PdfDocumentBuilder.AddedFont font = builder.AddStandard14Font(Standard14Font.Helvetica);
+
+        // Page 1: summary tables (no Date column) - must be skipped entirely.
+        PdfPageBuilder summary = builder.AddPage(820, 600);
+        AddText(summary, font, 40, 550, "Product");
+        AddText(summary, font, 200, 550, "Account Number");
+        AddText(summary, font, 340, 550, "IBAN");
+        AddText(summary, font, 520, 550, "Currency");
+        AddText(summary, font, 620, 550, "FCY Balance");
+        AddText(summary, font, 740, 550, "Balance");
+        AddText(summary, font, 40, 520, "Meezan Rupee Current A/c");
+        AddText(summary, font, 200, 520, "0105327871");
+        AddText(summary, font, 740, 520, "2,000.43");
+
+        // Page 2: the transaction table.
+        PdfPageBuilder page = builder.AddPage(820, 700);
+        double dateX = 20;
+        double valueDateX = 95;
+        double docX = 175;
+        double particularX = 265;
+        double debitX = 590;
+        double creditX = 670;
+        double balanceX = 745;
+
+        AddText(page, font, dateX, 660, "Date");
+        AddText(page, font, valueDateX, 660, "Value Date");
+        AddText(page, font, docX, 660, "Doc No");
+        AddText(page, font, particularX, 660, "Particular");
+        AddText(page, font, debitX, 660, "Debit");
+        AddText(page, font, creditX, 660, "Credit");
+        AddText(page, font, balanceX, 660, "Balance");
+
+        // Opening balance line (has a date, no Value Date/amounts except balance).
+        AddText(page, font, dateX, 630, "01-Jan-2026");
+        AddText(page, font, particularX, 630, "<=Opening Balance=>");
+        AddText(page, font, balanceX, 630, "3,000.43");
+
+        AddText(page, font, dateX, 600, "02-Jan-2026");
+        AddText(page, font, valueDateX, 600, "02-Jan-2026");
+        AddText(page, font, particularX, 600, ".... STAN(897247) BY MEEZAN RAAST");
+        AddText(page, font, debitX, 600, "-");
+        AddText(page, font, creditX, 600, "27,000.00");
+        AddText(page, font, balanceX, 600, "30,000.43");
+
+        AddText(page, font, dateX, 570, "02-Jan-2026");
+        AddText(page, font, valueDateX, 570, "02-Jan-2026");
+        AddText(page, font, particularX, 570, ".... STAN(879717) PK49SADA");
+        AddText(page, font, debitX, 570, "790.00");
+        AddText(page, font, creditX, 570, "-");
+        AddText(page, font, balanceX, 570, "29,210.43");
+
+        string path = WriteToTemp(builder);
+        try
+        {
+            var parser = new PdfStatementParser();
+
+            IReadOnlyList<StatementTransaction> transactions = parser.Parse(path);
+
+            parser.Columns.Should().Contain("Transaction Date");
+            parser.Columns.Should().Contain("Description");
+            parser.Columns.Should().Contain("Debit");
+            parser.Columns.Should().Contain("Credit");
+            parser.Columns.Should().Contain("Balance");
+            parser.Columns[parser.AnchorColumnIndex].Should().Be("Transaction Date");
+
+            transactions.Should().HaveCount(3);
+            transactions[1]["Transaction Date"].Should().Be("02/01/2026");
+            transactions[1]["Credit"].Should().Be("27,000.00");
+            transactions[1]["Debit"].Should().BeNullOrEmpty();
+            transactions[1]["Description"].Should().Contain("MEEZAN");
+            transactions[2]["Debit"].Should().Be("790.00");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Parse_AutoDetect_WithCompactDatesAndWithdrawalDeposit_ShouldParseTransactions()
+    {
+        // Reproduces a Standard Chartered statement: columns "Date  Description  Withdrawal  Deposit
+        // Balance" with compact separator-less dates such as "01Jun25". The compact date must anchor
+        // each transaction row, otherwise the parser reports "No transactions were detected".
+        var builder = new PdfDocumentBuilder();
+        PdfDocumentBuilder.AddedFont font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        PdfPageBuilder page = builder.AddPage(760, 620);
+
+        double dateX = 20;
+        double descX = 90;
+        double withdrawalX = 400;
+        double depositX = 520;
+        double balanceX = 640;
+
+        AddText(page, font, dateX, 590, "Date");
+        AddText(page, font, descX, 590, "Description");
+        AddText(page, font, withdrawalX, 590, "Withdrawal");
+        AddText(page, font, depositX, 590, "Deposit");
+        AddText(page, font, balanceX, 590, "Balance");
+
+        AddText(page, font, dateX, 560, "01Jun25");
+        AddText(page, font, descX, 560, "BALANCE B/F");
+        AddText(page, font, balanceX, 560, "604,993.64");
+
+        AddText(page, font, dateX, 530, "02Jun25");
+        AddText(page, font, descX, 530, "IBANKING TRF FROM 01982518 V.010625");
+        AddText(page, font, withdrawalX, 530, "01982518");
+        AddText(page, font, depositX, 530, "40,000.00");
+        AddText(page, font, balanceX, 530, "644,993.64");
+
+        AddText(page, font, dateX, 500, "02Jun25");
+        AddText(page, font, descX, 500, "ATM WDR AT 960129 04:05:35 V.010625");
+        AddText(page, font, withdrawalX, 500, "20,000.00");
+        AddText(page, font, balanceX, 500, "624,993.64");
+
+        AddText(page, font, dateX, 470, "10Jun25");
+        AddText(page, font, descX, 470, "DC TXN PKR 2500.00 ON 03/JUN");
+        AddText(page, font, withdrawalX, 470, "2,500.00");
+        AddText(page, font, balanceX, 470, "480,243.64");
+
+        string path = WriteToTemp(builder);
+        try
+        {
+            var parser = new PdfStatementParser();
+
+            IReadOnlyList<StatementTransaction> transactions = parser.Parse(path);
+
+            parser.Columns.Should().Contain("Transaction Date");
+            parser.Columns.Should().Contain("Debit");
+            parser.Columns.Should().Contain("Credit");
+            parser.Columns.Should().Contain("Balance");
+
+            transactions.Should().HaveCount(3);
+            // The leading "BALANCE B/F" carry-forward row is ignored (not a real transaction).
+            transactions[0]["Transaction Date"].Should().Be("02/06/2025");
+            transactions[0]["Credit"].Should().Be("40,000.00");
+            // A reference number that geometrically overlaps the Withdrawal column must be rejected:
+            // amount columns only accept genuine monetary values, never identifiers like "01982518".
+            transactions[0]["Debit"].Should().BeEmpty();
+            transactions[1]["Debit"].Should().Be("20,000.00");
+            transactions[2]["Transaction Date"].Should().Be("10/06/2025");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Parse_AutoDetect_WithRepeatingPageBanner_ShouldNotCorruptLastTransaction()
+    {
+        // Reproduces a multi-page Standard Chartered statement where every page repeats an account
+        // banner (From/To Date, Statement No, Account No, masked account) ABOVE the table header.
+        // The last transaction on page 1 must NOT absorb page 2's banner as a continuation line.
+        var builder = new PdfDocumentBuilder();
+        PdfDocumentBuilder.AddedFont font = builder.AddStandard14Font(Standard14Font.Helvetica);
+
+        double dateX = 20;
+        double descX = 90;
+        double withdrawalX = 400;
+        double depositX = 520;
+        double balanceX = 640;
+
+        // Page 1: banner, header, two transactions.
+        PdfPageBuilder page1 = builder.AddPage(760, 620);
+        AddText(page1, font, descX, 600, "From Date: 01/06/2025  To Date: 30/06/2025  Account No: *******8401");
+        AddText(page1, font, dateX, 560, "Date");
+        AddText(page1, font, descX, 560, "Description");
+        AddText(page1, font, withdrawalX, 560, "Withdrawal");
+        AddText(page1, font, depositX, 560, "Deposit");
+        AddText(page1, font, balanceX, 560, "Balance");
+        AddText(page1, font, dateX, 530, "05Jun25");
+        AddText(page1, font, descX, 530, "IBANKING TRF TO 8301");
+        AddText(page1, font, withdrawalX, 530, "20,000.00");
+        AddText(page1, font, balanceX, 530, "506,743.64");
+        AddText(page1, font, dateX, 500, "10Jun25");
+        AddText(page1, font, descX, 500, "DC TXN PKR 2500.00 ON 03/JUN JAVAID SERVICE STATION");
+        AddText(page1, font, withdrawalX, 500, "2,500.00");
+        AddText(page1, font, balanceX, 500, "480,243.64");
+
+        // Page 2: repeating banner (with masked numbers/dates), header, one transaction.
+        PdfPageBuilder page2 = builder.AddPage(760, 620);
+        AddText(page2, font, descX, 600, "From Date: 01/06/2025  To Date: 31/07/2026  Account No: 00922132489025 *******8401");
+        AddText(page2, font, dateX, 560, "Date");
+        AddText(page2, font, descX, 560, "Description");
+        AddText(page2, font, withdrawalX, 560, "Withdrawal");
+        AddText(page2, font, depositX, 560, "Deposit");
+        AddText(page2, font, balanceX, 560, "Balance");
+        // Dateless carry-forward marker repeated at the top of the continuation page.
+        AddText(page2, font, descX, 545, "BALANCE B/F");
+        AddText(page2, font, balanceX, 545, "480,243.64");
+        AddText(page2, font, dateX, 530, "10Jun25");
+        AddText(page2, font, descX, 530, "PK-019-250608-203132692-27 V.080625");
+        AddText(page2, font, withdrawalX, 530, "50,000.00");
+        AddText(page2, font, balanceX, 530, "430,243.64");
+
+        string path = WriteToTemp(builder);
+        try
+        {
+            var parser = new PdfStatementParser();
+
+            IReadOnlyList<StatementTransaction> transactions = parser.Parse(path);
+
+            transactions.Should().HaveCount(3);
+
+            // The last transaction on page 1 must remain clean: no banner dates/numbers merged in.
+            StatementTransaction lastOnPage1 = transactions[1];
+            lastOnPage1["Transaction Date"].Should().Be("10/06/2025");
+            lastOnPage1["Description"].Should().NotContain("00922132489025");
+            lastOnPage1["Description"].Should().NotContain("From Date");
+            lastOnPage1["Credit"].Should().BeEmpty();
+            lastOnPage1["Balance"].Should().Be("480,243.64");
+
+            // Page 2's transaction is parsed independently and correctly.
+            transactions[2]["Transaction Date"].Should().Be("10/06/2025");
+            transactions[2]["Debit"].Should().Be("50,000.00");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Parse_AutoDetect_WhenReferenceNumberDriftsIntoAmountColumn_ShouldKeepOnlyTheRealAmount()
+    {
+        // Reproduces a Meezan statement corruption: a STAN reference number such as "826971" drifts
+        // geometrically under the Debit column next to the real amount "7,500.00". The parser must
+        // reject the bare-integer reference so the Debit is "7,500.00" and NOT "8,269,717,500.00".
+        var builder = new PdfDocumentBuilder();
+        PdfDocumentBuilder.AddedFont font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        PdfPageBuilder page = builder.AddPage(760, 620);
+
+        double dateX = 20;
+        double descX = 90;
+        double debitX = 430;
+        double creditX = 540;
+        double balanceX = 650;
+
+        AddText(page, font, dateX, 590, "Date");
+        AddText(page, font, descX, 590, "Description");
+        AddText(page, font, debitX, 590, "Debit");
+        AddText(page, font, creditX, 590, "Credit");
+        AddText(page, font, balanceX, 590, "Balance");
+
+        // The reference "826971" appears in the description flow; the real amount is under Debit.
+        AddText(page, font, dateX, 560, "19/01/2026");
+        AddText(page, font, descX, 560, "MBANKING FUNDS TRANSFER STAN (826971) TO:VENTURE GAMES");
+        AddText(page, font, debitX, 560, "7,500.00");
+        AddText(page, font, balanceX, 560, "21,516.43");
+
+        string path = WriteToTemp(builder);
+        try
+        {
+            var parser = new PdfStatementParser();
+
+            IReadOnlyList<StatementTransaction> transactions = parser.Parse(path);
+
+            transactions.Should().HaveCount(1);
+            transactions[0]["Debit"].Should().Be("7,500.00");
+            transactions[0]["Description"].Should().Contain("MBANKING FUNDS TRANSFER STAN");
+            transactions[0]["Balance"].Should().Be("21,516.43");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string CreateStatementPdf(string[] headerCells, double[] positions)
     {
         var builder = new PdfDocumentBuilder();

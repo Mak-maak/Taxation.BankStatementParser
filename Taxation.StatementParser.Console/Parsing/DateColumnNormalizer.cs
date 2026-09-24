@@ -49,15 +49,20 @@ public static class DateColumnNormalizer
         // Month first (e.g. "Jul 03 2025", comma already stripped before parsing).
         "MMM dd yyyy", "MMM d yyyy", "MMMM dd yyyy", "MMMM d yyyy",
         "MMM dd yy", "MMM d yy", "MMMM dd yy", "MMMM d yy",
+        // Concatenated day/abbreviated-month/year with no separators (e.g. "01Jun25", "1Jun2025").
+        "ddMMMyyyy", "dMMMyyyy", "ddMMMyy", "dMMMyy",
+        "ddMMMMyyyy", "dMMMMyyyy", "ddMMMMyy", "dMMMMyy",
     ];
 
     // A leading date token. Any of:
     //   numeric               01/07/2025, 1-7-2025, 01.07.25
     //   day-abbrevMonth-year  02-JUN-25, 02/Jun/2025, 02.Jun.25
-    //   worded (day first)    03 Jul 2025, 3 July 25
+    //   day+month+year        01Jun25, 1Jun2025 (concatenated, no separators)
+    //   worded (day first)    03 Jul 2025, 3 July 25, and spacing-variant forms such as
+    //                         "01Jun 25" / "01 Jun25" that PDF text extraction can produce
     //   worded (month first)  Jul 03, 2025
     private static readonly Regex LeadingDateToken = new(
-        @"^\s*(?<date>(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})|(\d{1,2}[/\-.][A-Za-z]{3,9}[/\-.]\d{2,4})|(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})|([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}))",
+        @"^\s*(?<date>(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})|(\d{1,2}[/\-.][A-Za-z]{3,9}[/\-.]\d{2,4})|(\d{1,2}\s*[A-Za-z]{3,9}\s*\d{2,4})|([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     // A time component (e.g. "16:51") signals a footer/print stamp, never a transaction date cell.
@@ -100,12 +105,13 @@ public static class DateColumnNormalizer
         }
 
         string candidate = CollapseWhitespace(match.Groups["date"].Value).Replace(",", string.Empty);
-        if (!DateTime.TryParseExact(
-                candidate,
-                AcceptedFormats,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out DateTime parsed))
+
+        // Try the candidate as extracted, then a spacing-normalized variant with all internal
+        // whitespace removed. PDF text extraction frequently splits a compact date like "01Jun25"
+        // inconsistently (e.g. "01Jun 25" or "01 Jun25"); collapsing the spaces lets the concatenated
+        // "ddMMMyy" formats still match so these rows are recognised as transactions.
+        if (!TryParseCandidate(candidate, out DateTime parsed) &&
+            !TryParseCandidate(candidate.Replace(" ", string.Empty), out parsed))
         {
             return false;
         }
@@ -114,6 +120,14 @@ public static class DateColumnNormalizer
         trailingNoise = cell[match.Length..].Trim();
         return true;
     }
+
+    private static bool TryParseCandidate(string candidate, out DateTime parsed) =>
+        DateTime.TryParseExact(
+            candidate,
+            AcceptedFormats,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out parsed);
 
     /// <summary>
     /// Returns <c>true</c> when the cell begins with a valid, normalizable transaction date.
